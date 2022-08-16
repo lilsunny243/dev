@@ -57,7 +57,7 @@ async function buildBabel (dir, type) {
   });
 
   // rewrite a skeleton package.json with a type=module
-  if (type !== 'esm') {
+  if (type === 'esm') {
     [
       ...CPX,
       `../../build/${dir}/src/**/*.d.ts`,
@@ -68,6 +68,39 @@ async function buildBabel (dir, type) {
 
 function witeJson (path, json) {
   fs.writeFileSync(path, `${JSON.stringify(json, null, 2)}\n`);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function adjustEsmPath (pkgCwd, pkgJson, dir, f, isDeclare) {
+  if (f.startsWith('.')) {
+    if (f.endsWith('.ts') || f.endsWith('.tsx') || f.endsWith('.json') || f.includes("' assert { type:")) {
+      // ignore, these are already fully-specified
+      return null;
+    } else if (f.endsWith('.js')) {
+      if (f.includes('./cjs/')) {
+        // import from cjs/, change it to deno
+        return f.replace('/cjs/', '/deno/');
+      }
+
+      // leave the other paths as-is
+      return null;
+    }
+
+    const dirPath = path.join(process.cwd(), dir, f);
+    const jsFile = `${f}.js`;
+    const jsPath = path.join(process.cwd(), dir, jsFile);
+
+    if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
+      // this is a directory, append index.ts
+      return `${f}/index.js`;
+    } else if (fs.existsSync(jsPath)) {
+      // local source file
+      return jsFile;
+    }
+  }
+
+  // fully-specified file, keep it as-is (linting picks up invalids)
+  return null;
 }
 
 function adjustDenoPath (pkgCwd, pkgJson, dir, f, isDeclare) {
@@ -132,7 +165,7 @@ function adjustDenoPath (pkgCwd, pkgJson, dir, f, isDeclare) {
     // we don't know what to do here :(
     throw new Error(`Unable to find ${f}`);
   } else if (f.startsWith('.')) {
-    if (f.endsWith('.ts') || f.endsWith('.tsx') || f.endsWith('.json')) {
+    if (f.endsWith('.ts') || f.endsWith('.tsx') || f.endsWith('.json') || f.includes("' assert { type:")) {
       // ignore, these are already fully-specified
       return null;
     } else if (f.endsWith('.js')) {
@@ -176,7 +209,7 @@ function adjustDenoPath (pkgCwd, pkgJson, dir, f, isDeclare) {
     }
 
     // fully-specified file, keep it as-is (linting picks up invalids)
-    return f;
+    return null;
   }
 
   const depParts = f.split('/');
@@ -225,49 +258,53 @@ function adjustDenoPath (pkgCwd, pkgJson, dir, f, isDeclare) {
     : `${denoExtPrefix}/${depName}${version || ''}${depPath || ''}`;
 }
 
-function rewriteDenoPaths (pkgCwd, pkgJson, rootDir, dir) {
+function rewritePath (pkgCwd, pkgJson, dir, thisPath, replacer) {
+  fs.writeFileSync(
+    thisPath,
+    fs
+      .readFileSync(thisPath, 'utf8')
+      // handle import/export
+      .replace(/(import|export) (.*) from '(.*)'/g, (o, t, a, f) => {
+        const adjusted = replacer(pkgCwd, pkgJson, dir, f);
+
+        return adjusted
+          ? `${t} ${a} from '${adjusted}'`
+          : o;
+      })
+      // handle augmented inputs
+      .replace(/(import|declare module) '(.*)'/g, (o, t, f) => {
+        const adjusted = replacer(pkgCwd, pkgJson, dir, f, t !== 'import');
+
+        return adjusted
+          ? `${t} '${adjusted}'`
+          : o;
+      })
+      // handle dynamic imports
+      .replace(/ import\('(.*)'\)/g, (o, f) => {
+        const adjusted = replacer(pkgCwd, pkgJson, dir, f);
+
+        return adjusted
+          ? ` import('${adjusted}')`
+          : o;
+      })
+  );
+}
+
+function rewritePaths (pkgCwd, pkgJson, dir, fileReplacer) {
   fs
     .readdirSync(dir)
     .forEach((p) => {
       const thisPath = path.join(process.cwd(), dir, p);
 
       if (fs.statSync(thisPath).isDirectory()) {
-        rewriteDenoPaths(pkgCwd, pkgJson, rootDir, `${dir}/${p}`);
-      } else if (thisPath.endsWith('.ts') || thisPath.endsWith('.tsx') || thisPath.endsWith('.md')) {
-        fs.writeFileSync(
-          thisPath,
-          fs
-            .readFileSync(thisPath, 'utf8')
-            // handle import/export
-            .replace(/(import|export) (.*) from '(.*)'/g, (o, t, a, f) => {
-              const adjusted = adjustDenoPath(pkgCwd, pkgJson, dir, f);
-
-              return adjusted
-                ? `${t} ${a} from '${adjusted}'`
-                : o;
-            })
-            // handle augmented inputs
-            .replace(/(import|declare module) '(.*)'/g, (o, t, f) => {
-              const adjusted = adjustDenoPath(pkgCwd, pkgJson, dir, f, t !== 'import');
-
-              return adjusted
-                ? `${t} '${adjusted}'`
-                : o;
-            })
-            // handle dynamic imports
-            .replace(/ import\('(.*)'\)/g, (o, f) => {
-              const adjusted = adjustDenoPath(pkgCwd, pkgJson, dir, f);
-
-              return adjusted
-                ? ` import('${adjusted}')`
-                : o;
-            })
-        );
+        rewritePaths(pkgCwd, pkgJson, `${dir}/${p}`, fileReplacer);
+      } else if (thisPath.endsWith('.js') || thisPath.endsWith('.ts') || thisPath.endsWith('.tsx') || thisPath.endsWith('.md')) {
+        rewritePath(pkgCwd, pkgJson, dir, thisPath, fileReplacer);
       }
     });
 }
 
-function buildDeno (pkgJson) {
+function buildDeno () {
   const pkgCwd = process.cwd();
 
   if (!fs.existsSync(path.join(pkgCwd, 'src/mod.ts'))) {
@@ -281,9 +318,6 @@ function buildDeno (pkgJson) {
   rimraf.sync('build-deno/cjs');
   rimraf.sync('build-deno/**/*.spec.ts');
   rimraf.sync('build-deno/**/*.rs');
-
-  // adjust the import paths
-  rewriteDenoPaths(pkgCwd, pkgJson, 'build-deno', 'build-deno');
 }
 
 function relativePath (value) {
@@ -858,6 +892,10 @@ async function buildJs (repoPath, dir, locals) {
       await buildBabel(dir, 'esm');
 
       buildDeno(pkgJson);
+
+      // adjust the import paths
+      rewritePaths(process.cwd(), pkgJson, 'build', adjustEsmPath);
+      rewritePaths(process.cwd(), pkgJson, 'build-deno', adjustDenoPath);
 
       timeIt('Successfully built exports', () => buildExports());
       timeIt('Successfully linted configs', () => {
