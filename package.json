@@ -1,6 +1,9 @@
 {
   "author": "Jaco Greeff <jacogr@gmail.com>",
   "bugs": "https://github.com/polkadot-js/dev/issues",
+  "engines": {
+    "node": ">=14"
+  },
   "homepage": "https://github.com/polkadot-js/dev#readme",
   "license": "Apache-2.0",
   "packageManager": "yarn@3.2.0",
@@ -11,17 +14,17 @@
   },
   "sideEffects": false,
   "type": "module",
-  "version": "0.69.23",
+  "version": "0.72.2",
   "versions": {
-    "git": "0.69.23",
-    "npm": "0.69.23"
+    "git": "0.72.2",
+    "npm": "0.72.2"
   },
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "build": "polkadot-dev-build-ts --compiler babel",
-    "build:extra": "(cd packages/dev && polkadot-dev-copy-dir config build/config && polkadot-dev-copy-dir scripts build/scripts)",
+    "build": "polkadot-dev-build-ts",
+    "build:before": "(cd packages/dev && polkadot-dev-copy-dir config build/config && polkadot-dev-copy-dir scripts build/scripts)",
     "build:release": "polkadot-ci-ghact-build --skip-beta",
     "clean": "polkadot-dev-clean-build",
     "docs": "polkadot-dev-build-docs",
@@ -31,7 +34,9 @@
     "test:one": "polkadot-dev-run-test --env browser"
   },
   "devDependencies": {
-    "@polkadot/dev": "workspace:packages/dev"
+    "@polkadot/dev": "workspace:packages/dev",
+    "@polkadot/dev-test": "workspace:packages/dev-test",
+    "@polkadot/dev-ts": "workspace:packages/dev-ts"
   },
   "resolutions": {
     "typescript": "^4.9.5"

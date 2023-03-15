@@ -2,27 +2,29 @@
 // Copyright 2017-2023 @polkadot/dev authors & contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import babel from '@babel/cli/lib/babel/dir.js';
-import { transform } from '@swc/core';
-import fs from 'fs';
-import path from 'path';
-import process from 'process';
+import fs from 'node:fs';
+import path from 'node:path';
+import process from 'node:process';
+import ts from 'typescript';
 
-import swcrcCjs from '../config/swcrc-cjs.json' assert { type: 'json' };
-import swcrcEsm from '../config/swcrc-esm.json' assert { type: 'json' };
-import { __dirname, copyDirSync, copyFileSync, DENO_EXT_PRE, DENO_LND_PRE, DENO_POL_PRE, execSync, exitFatal, mkdirpSync, PATHS_BUILD, readdirSync, rimrafSync } from './util.mjs';
+import { copyDirSync, copyFileSync, DENO_EXT_PRE, DENO_LND_PRE, DENO_POL_PRE, execSync, exitFatal, mkdirpSync, PATHS_BUILD, readdirSync, rimrafSync } from './util.mjs';
 
-const BL_CONFIGS = ['js', 'cjs'].map((e) => `babel.config.${e}`);
 const WP_CONFIGS = ['js', 'cjs'].map((e) => `webpack.config.${e}`);
 const RL_CONFIGS = ['js', 'mjs', 'cjs'].map((e) => `rollup.config.${e}`);
 
 console.log('$ polkadot-dev-build-ts', process.argv.slice(2).join(' '));
 
+// We need at least es2020 for dynamic imports. Aligns with node/ts/loader & config/tsconfig
+// Node 14 === es2020, Node 16 === es2021, Node 18 === es2022
+// https://github.com/tsconfig/bases/blob/d699759e29cfd5f6ab0fab9f3365c7767fca9787/bases/node14.json#L8
+const TARGET_TSES = ts.ScriptTarget.ES2020;
+const TARGET_NODE = '14';
+
 const IGNORE_IMPORTS = [
   // node
   'crypto', 'fs', 'os', 'path', 'process', 'readline', 'util',
   // node (new-style)
-  'node:assert', 'node:assert/strict', 'node:child_process', 'node:crypto', 'node:fs', 'node:os', 'node:path', 'node:process', 'node:test', 'node:url', 'node:util',
+  'node:assert', 'node:child_process', 'node:crypto', 'node:fs', 'node:os', 'node:path', 'node:process', 'node:test', 'node:url', 'node:util',
   // other
   '@testing-library/react',
   'react', 'react-native', 'styled-components'
@@ -35,7 +37,7 @@ function buildWebpack () {
   execSync(`yarn polkadot-exec-webpack --config ${config} --mode production`);
 }
 
-// compile via babel, either via supplied config or default
+// compile via tsc, either via supplied config or default
 async function compileJs (compileType, type) {
   const buildDir = path.join(process.cwd(), `build-${compileType}-${type}`);
 
@@ -45,44 +47,30 @@ async function compileJs (compileType, type) {
     '.d.ts', '.manual.ts', '.spec.ts', '.spec.tsx', '.test.ts', '.test.tsx', 'mod.ts'
   ].some((e) => f.endsWith(e)));
 
-  if (compileType === 'babel') {
-    const configs = BL_CONFIGS.map((c) => path.join(process.cwd(), `../../${c}`));
+  if (compileType === 'tsc') {
+    await timeIt(`Successfully compiled ${compileType} ${type}`, () => {
+      files.forEach((filename) => {
+        // split src prefix, replace .ts extension with .js
+        const outFile = path.join(buildDir, filename.split(/[\\/]/).slice(1).join('/').replace(/\.tsx?$/, '.js'));
+        const { outputText } = ts.transpileModule(fs.readFileSync(filename, 'utf-8'), {
+          compilerOptions: {
+            esModuleInterop: true,
+            importHelpers: true,
+            jsx: filename.endsWith('.tsx')
+              ? ts.JsxEmit.ReactJSX
+              : undefined,
+            module: type === 'cjs'
+              ? ts.ModuleKind.CommonJS
+              : ts.ModuleKind.ESNext,
+            moduleResolution: ts.ModuleResolutionKind.NodeNext,
+            target: TARGET_TSES
+          }
+        });
 
-    await babel.default({
-      babelOptions: {
-        configFile: type === 'esm'
-          ? path.join(__dirname, '../config/babel-config-esm.cjs')
-          : configs.find((f) => fs.existsSync(f)) || path.join(__dirname, '../config/babel-config-cjs.cjs')
-      },
-      cliOptions: {
-        extensions: ['.ts', '.tsx'],
-        filenames: ['src'],
-        ignore: '**/*.d.ts',
-        outDir: buildDir,
-        outFileExtension: '.js'
-      }
+        mkdirpSync(path.dirname(outFile));
+        fs.writeFileSync(outFile, outputText);
+      });
     });
-  } else if (compileType === 'swc') {
-    const swcrc = type === 'cjs'
-      ? swcrcCjs
-      : swcrcEsm;
-
-    await timeIt(`Successfully compiled ${compileType} ${type}`, () =>
-      Promise.all(
-        files.map(async (filename) => {
-          // split src prefix, replace .ts extension with .js
-          const outFile = path.join(buildDir, filename.split(/[\\/]/).slice(1).join('/').replace(/\.tsx?$/, '.js'));
-          const { code } = await transform(fs.readFileSync(filename, 'utf-8'), {
-            ...swcrc,
-            filename,
-            swcrc: false
-          });
-
-          mkdirpSync(path.dirname(outFile));
-          fs.writeFileSync(outFile, code);
-        })
-      )
-    );
   } else {
     throw new Error(`Unknown --compiler ${compileType}`);
   }
@@ -401,10 +389,10 @@ function copyBuildFiles (compileType, dir) {
   // copy all *.d.ts files
   copyDirSync([path.join('../../build', dir, 'src'), path.join('../../build/packages', dir, 'src')], 'build', ['.d.ts']);
 
-  // copy all from build-{babel|swc|...}-esm to build
+  // copy all from build-{babel|swc|tsc|...}-esm to build
   copyDirSync(`build-${compileType}-esm`, 'build');
 
-  // copy from build-{babel|swc|...}-cjs to build/cjs (js-only)
+  // copy from build-{babel|swc|tsc|...}-cjs to build/cjs (js-only)
   copyDirSync(`build-${compileType}-cjs`, 'build/cjs', ['.js']);
 }
 
@@ -490,25 +478,25 @@ function findFiles (buildDir, extra = '', exclude = []) {
 }
 
 function tweakCjsPaths () {
-  const cjsDir = 'build/cjs';
-
-  fs
-    .readdirSync(cjsDir)
-    .filter((n) => n.endsWith('.js'))
-    .forEach((jsName) => {
-      const thisPath = path.join(cjsDir, jsName);
-
-      fs.writeFileSync(
-        thisPath,
-        fs
-          .readFileSync(thisPath, 'utf8')
-          .replace(
-            // require("@polkadot/$1/$2")
-            /require\("@polkadot\/([a-z-]*)\/(.*)"\)/g,
-            'require("@polkadot/$1/cjs/$2")'
-          )
-      );
-    });
+  readdirSync('build/cjs', ['.js']).forEach((thisPath) => {
+    fs.writeFileSync(
+      thisPath,
+      fs
+        .readFileSync(thisPath, 'utf8')
+        // This is actually problematic - while we don't use non-js imports (mostly),
+        // this would also match those, which creates issues. For the most part we only
+        // actually should only care about packageInfo, so add this one explicitly. If we
+        // do use path-imports for others, rather adjust them at that specific point
+        // .replace(
+        //   /require\("@polkadot\/([a-z-]*)\/(.*)"\)/g,
+        //   'require("@polkadot/$1/cjs/$2")'
+        // )
+        .replace(
+          /require\("@polkadot\/([a-z-]*)\/packageInfo"\)/g,
+          'require("@polkadot/$1/cjs/packageInfo")'
+        )
+    );
+  });
 }
 
 function tweakPackageInfo (compileType) {
@@ -718,15 +706,16 @@ function orderPackageJson (repoPath, dir, json) {
     url: `https://github.com/${repoPath}.git`
   };
   json.sideEffects = json.sideEffects || false;
+  json.engines = {
+    node: `>=${TARGET_NODE}`
+  };
 
   // sort the object
   const sorted = sortJson(json);
 
-  // remove empty artifacts
-  ['engines'].forEach((d) => {
-    if (typeof json[d] === 'object' && Object.keys(json[d]).length === 0) {
-      delete sorted[d];
-    }
+  // remove empties (may be re-added at some point)
+  ['contributors', 'maintainers'].forEach((d) => {
+    delete sorted[d];
   });
 
   // move the different entry points to the (almost) end
@@ -797,7 +786,7 @@ function loopFiles (exts, dir, sub, fn, allowComments = false) {
 function lintOutput (dir) {
   throwOnErrors(
     loopFiles(['.d.ts', '.js', '.cjs'], dir, 'build', (full, l, n) => {
-      if (l.startsWith('import ') && l.includes(" from '") && l.includes('/src/')) {
+      if ((l.includes('import(') || (l.startsWith('import ') && l.includes(" from '"))) && l.includes('/src/')) {
         // we are not allowed to import from /src/
         return createError(full, l, n, 'Invalid import from /src/');
       // eslint-disable-next-line no-useless-escape
@@ -866,9 +855,11 @@ function lintDependencies (compileType, dir, locals) {
     return;
   }
 
-  const checkDep = compileType === 'swc'
-    ? '@swc/helpers'
-    : '@babel/runtime';
+  const checkDep = compileType === 'babel'
+    ? '@babel/runtime'
+    : compileType === 'swc'
+      ? '@swc/helpers'
+      : 'tslib';
 
   if (!dependencies[checkDep]) {
     throw new Error(`${name} does not include the ${checkDep} dependency`);
@@ -905,7 +896,7 @@ function lintDependencies (compileType, dir, locals) {
           const local = locals.find(([, name]) => name === dep);
           const isTest = full.endsWith('.spec.ts') || full.endsWith('.test.ts') || full.endsWith('.manual.ts') || full.includes('/test/');
 
-          if (!(isTest ? devDeps : deps).includes(dep)) {
+          if (!(isTest ? devDeps : deps).includes(dep) && !deps.includes(dep.split('/')[0])) {
             return createError(full, l, n, `${dep} is not included in package.json dependencies`);
           } else if (local) {
             const ref = local[0];
@@ -963,14 +954,14 @@ async function buildJs (compileType, repoPath, dir, locals) {
     fs.writeFileSync(path.join(process.cwd(), 'src/packageInfo.ts'), `${genHeader}\nexport const packageInfo = { name: '${name}', path: 'auto', type: 'auto', version: '${version}' };\n`);
 
     if (!name.startsWith('@polkadot/x-')) {
-      if (name !== '@polkadot/util' && name !== '@polkadot/dev') {
+      if (name !== '@polkadot/util' && !name.startsWith('@polkadot/dev')) {
         const detectOther = path.join(process.cwd(), 'src/detectOther.ts');
 
         if (!fs.existsSync(detectOther)) {
           fs.writeFileSync(detectOther, `${srcHeader}\n// Empty template, auto-generated by @polkadot/dev\n\nexport default [];\n`);
         }
 
-        fs.writeFileSync(path.join(process.cwd(), 'src/detectPackage.ts'), `${genHeader}\nimport { detectPackage } from '@polkadot/util';\n\nimport others from './detectOther';\nimport { packageInfo } from './packageInfo';\n\ndetectPackage(packageInfo, null, others);\n`);
+        fs.writeFileSync(path.join(process.cwd(), 'src/detectPackage.ts'), `${genHeader}\nimport { detectPackage } from '@polkadot/util';\n\nimport others from './detectOther.js';\nimport { packageInfo } from './packageInfo.js';\n\ndetectPackage(packageInfo, null, others);\n`);
       }
 
       const cjsRoot = path.join(process.cwd(), 'src/cjs');
@@ -1029,7 +1020,7 @@ async function buildJs (compileType, repoPath, dir, locals) {
 
 async function main () {
   const args = process.argv.slice(2);
-  let compileType = 'babel';
+  let compileType = 'tsc';
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--compiler') {
@@ -1041,8 +1032,14 @@ async function main () {
 
   const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), './package.json'), 'utf-8'));
 
-  if (pkg.scripts && pkg.scripts['build:extra']) {
-    execSync('yarn build:extra');
+  if (pkg.scripts) {
+    if (pkg.scripts['build:extra']) {
+      throw new Error('Found deprecated build:extra script, use build:before or build:after instead');
+    }
+
+    if (pkg.scripts['build:before']) {
+      execSync('yarn build:before');
+    }
   }
 
   const repoPath = pkg.repository.url
@@ -1081,6 +1078,12 @@ async function main () {
 
   if (RL_CONFIGS.some((c) => fs.existsSync(path.join(process.cwd(), c)))) {
     execSync('yarn polkadot-exec-rollup --config');
+  }
+
+  if (pkg.scripts) {
+    if (pkg.scripts['build:after']) {
+      execSync('yarn build:after');
+    }
   }
 }
 
