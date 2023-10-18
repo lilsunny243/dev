@@ -10,7 +10,7 @@ const [e, i] = fs
   .readdirSync('packages')
   .filter((p) => fs.existsSync(`packages/${p}/src/mod.ts`))
   .sort()
-  .reduce(([e, i], p) => {
+  .reduce((/** @type {[string[], Record<String, string>]} */ [e, i], p) => {
     e.push(`export * as ${p.replace(/-/g, '_')} from '${DENO_POL_PRE}/${p}/mod.ts';`);
     i[`${DENO_POL_PRE}/${p}/`] = `./packages/${p}/build-deno/`;
 
@@ -18,7 +18,8 @@ const [e, i] = fs
   }, [[], {}]);
 
 if (!fs.existsSync('mod.ts')) {
-  fs.writeFileSync('mod.ts', `// Copyright 2017-${new Date().getFullYear()} @polkadot/dev authors & contributors\n// SPDX-License-Identifier: Apache-2.0\n\n// auto-generated via polkadot-dev-deno-map, do not edit\n\n${e.join('\n')}\n`);
+  fs.writeFileSync('mod.ts', `// Copyright 2017-${new Date().getFullYear()} @polkadot/dev authors & contributors\n// SPDX-License-Identifier: Apache-2.0\n\n// auto-generated via polkadot-dev-deno-map, do not edit\n\n// This is a Deno file, so we can allow .ts imports
+  /* eslint-disable import/extensions */\n\n${e.join('\n')}\n`);
 }
 
 if (fs.existsSync('import_map.in.json')) {

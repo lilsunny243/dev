@@ -1,13 +1,14 @@
 // Copyright 2017-2023 @polkadot/dev authors & contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// @ts-check
-
 import cp from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import url from 'node:url';
+
+/** @internal logging */
+const BLANK = ''.padStart(75);
 
 /** CJS/ESM compatible __dirname */
 export const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
@@ -26,6 +27,15 @@ export const GITHUB_USER = 'github-actions[bot]';
 
 /** The GH email for actions */
 export const GITHUB_MAIL = '41898282+github-actions[bot]@users.noreply.github.com';
+
+/** The GH repo link */
+export const GITHUB_REPO = process.env['GITHUB_REPOSITORY'];
+
+/** The GH token */
+export const GITHUB_TOKEN = process.env['GH_PAT'];
+
+/** The GH repo URL */
+export const GITHUB_TOKEN_URL = `https://${GITHUB_TOKEN}@github.com`;
 
 /** Paths that we generally building to (catch-all for possible usages) */
 export const PATHS_BUILD = ['', '-cjs', '-esm'].reduce((r, a) => r.concat(['', '-babel', '-esbuild', '-swc', '-tsc'].map((b) => `${b}${a}`)), ['-deno', '-docs', '-loader', '-wasm']).sort();
@@ -72,7 +82,7 @@ export function copyDirSync (src, dest, include, exclude) {
 
         if (fs.statSync(srcPath).isDirectory()) {
           copyDirSync(srcPath, path.join(dest, file), include, exclude);
-        } else if (!include || !include.length || include.some((e) => file.endsWith(e))) {
+        } else if (!include?.length || include.some((e) => file.endsWith(e))) {
           if (!exclude || !exclude.some((e) => file.endsWith(e))) {
             copyFileSync(srcPath, dest);
           }
@@ -94,25 +104,108 @@ export function denoCreateDir (name) {
 }
 
 /**
+ * @internal
+ *
+ * Adjusts the engine setting, highest of current and requested
+ *
+ * @param {string} [a]
+ * @param {string} [b]
+ * @returns {number}
+ */
+export function engineVersionCmp (a, b) {
+  const aVer = engineVersionSplit(a);
+  const bVer = engineVersionSplit(b);
+
+  for (let i = 0; i < 3; i++) {
+    if (aVer[i] < bVer[i]) {
+      return -1;
+    } else if (aVer[i] > bVer[i]) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * @internal
+ *
+ * Splits a engines version, i.e. >=xx(.yy) into
+ * the major/minor/patch parts
+ *
+ * @param {string} [ver]
+ * @returns {[number, number, number]}
+ */
+export function engineVersionSplit (ver) {
+  const parts = (ver || '>=0')
+    .replace('v', '') // process.version returns v18.14.0
+    .replace('>=', '') // engines have >= prefix
+    .split('.')
+    .map((e) => e.trim());
+
+  return [parseInt(parts[0] || '0', 10), parseInt(parts[1] || '0', 10), parseInt(parts[2] || '0', 10)];
+}
+
+/**
  * Process execution
  *
  * @param {string} cmd
  * @param {boolean} [noLog]
  **/
 export function execSync (cmd, noLog) {
-  !noLog && console.log(`$ ${cmd.replace(/ {2}/g, ' ')}`);
+  const exec = cmd
+    .replace(/ {2}/g, ' ')
+    .trim();
 
-  cp.execSync(cmd, { stdio: 'inherit' });
+  if (!noLog) {
+    console.log(`$ ${exec}`);
+  }
+
+  cp.execSync(exec, { stdio: 'inherit' });
 }
 
 /**
  * Node execution with ts support
  *
  * @param {string} cmd
+ * @param {string[]} [nodeFlags]
  * @param {boolean} [noLog]
+ * @param {string} [loaderPath]
  **/
-export function execNodeTsSync (cmd, noLog) {
-  execSync(`${process.execPath} --no-warnings --enable-source-maps --loader @polkadot/dev-ts ${cmd}`, noLog);
+export function execNodeTsSync (cmd, nodeFlags = [], noLog, loaderPath = '@polkadot/dev-ts/cached') {
+  const loadersGlo = [];
+  const loadersLoc = [];
+  const otherFlags = [];
+
+  for (let i = 0; i < nodeFlags.length; i++) {
+    const flag = nodeFlags[i];
+
+    if (['--import', '--loader', '--require'].includes(flag)) {
+      const arg = nodeFlags[++i];
+
+      // We split the loader arguments based on type in execSync. The
+      // split here is to extract the various provided types:
+      //
+      // 1. Global loaders are added first, then
+      // 2. Our specific dev-ts loader is added, then
+      // 3. Any provided local loaders are added
+      //
+      // The ordering requirement here is driven from the use of global
+      // loaders inside the apps repo (specifically extensionless), while
+      // ensuring we don't break local loader usage in the wasm repo
+      if (arg.startsWith('.')) {
+        loadersLoc.push(flag);
+        loadersLoc.push(arg);
+      } else {
+        loadersGlo.push(flag);
+        loadersGlo.push(arg);
+      }
+    } else {
+      otherFlags.push(flag);
+    }
+  }
+
+  execSync(`${process.execPath} ${otherFlags.join(' ')} --no-warnings --enable-source-maps ${loadersGlo.join(' ')} --loader ${loaderPath} ${loadersLoc.join(' ')} ${cmd}`, noLog);
 }
 
 /**
@@ -124,9 +217,9 @@ export function execNodeTsSync (cmd, noLog) {
 export function execViaNode (name, cmd) {
   const args = process.argv.slice(2).join(' ');
 
-  console.log(`$ ${name}${args ? ` ${args}` : ''}`);
+  console.log(`$ ${name} ${args}`.replace(/ {2}/g, ' ').trim());
 
-  return execSync(`${importPath(cmd)}${args ? ` ${args}` : ''}`, true);
+  return execSync(`${importPath(cmd)} ${args}`, true);
 }
 
 /** A consistent setup for git variables */
@@ -141,7 +234,8 @@ export function gitSetup () {
 }
 
 /**
- * Do an import from a <this module> path
+ * Create an absolute import path into node_modules from a
+ * <this module> module name
  *
  * @param {string} req
  * @returns {string}
@@ -164,7 +258,7 @@ export async function importDirect (bin, req) {
     const mod = await import(req);
 
     return mod;
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     exitFatal(`Error importing ${req}`, error);
   }
 }
@@ -234,6 +328,7 @@ export function readdirSync (src, extensions, files = []) {
  *
  * @param {string} message
  * @param {Error} [error]
+ * @returns {never}
  **/
 export function exitFatal (message, error) {
   console.error();
@@ -246,4 +341,51 @@ export function exitFatal (message, error) {
 
   console.error();
   process.exit(1);
+}
+
+/**
+ * Checks for Node version with a fatal exit code
+ */
+export function exitFatalEngine () {
+  const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8'));
+
+  if (engineVersionCmp(process.version, pkg.engines?.node) === -1) {
+    console.error(
+      `${BLANK}\n   FATAL: At least Node version ${pkg.engines.node} is required for development.\n${BLANK}`
+    );
+
+    console.error(`
+        Technical explanation: For a development environment all projects in
+        the @polkadot famility uses node:test in their operation. Currently the
+        minimum required version of Node is thus set at the first first version
+        with operational support, hence this limitation. Additionally only LTS
+        Node versions are supported.
+
+        LTS Node versions are detailed on https://nodejs.dev/en/about/releases/
+
+    `);
+
+    process.exit(1);
+  }
+}
+
+/**
+ * Checks for yarn usage with a fatal exit code
+ */
+export function exitFatalYarn () {
+  if (!process.env['npm_execpath']?.includes('yarn')) {
+    console.error(
+      `${BLANK}\n   FATAL: The use of yarn is required, install via npm is not supported.\n${BLANK}`
+    );
+    console.error(`
+        Technical explanation: All the projects in the @polkadot' family use
+        yarn workspaces, along with hoisting of dependencies. Currently only
+        yarn supports package.json workspaces, hence the limitation.
+
+        If yarn is not available, you can get it from https://yarnpkg.com/
+
+    `);
+
+    process.exit(1);
+  }
 }

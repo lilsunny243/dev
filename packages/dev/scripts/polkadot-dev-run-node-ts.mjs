@@ -8,4 +8,4 @@ const cmd = process.argv.slice(2).join(' ');
 
 console.log('$ polkadot-run-node-ts', cmd);
 
-execNodeTsSync(cmd.join(' '));
+execNodeTsSync(cmd);

@@ -3,7 +3,7 @@
   "bugs": "https://github.com/polkadot-js/dev/issues",
   "description": "A basic test-functions-as-global library on top of node:test",
   "engines": {
-    "node": ">=14"
+    "node": ">=18.14"
   },
   "homepage": "https://github.com/polkadot-js/dev/tree/master/packages/dev-test#readme",
   "license": "Apache-2.0",
@@ -15,14 +15,16 @@
   },
   "sideEffects": false,
   "type": "module",
-  "version": "0.72.2",
+  "version": "0.76.29",
   "main": "./index.js",
   "exports": {
-    "./browser": "./src/browser.cjs",
-    "./node": "./src/node.cjs",
-    "./node.d.ts": "./src/node.d.ts"
+    "./globals.d.ts": "./src/globals.d.ts"
   },
   "dependencies": {
-    "tslib": "^2.5.0"
+    "jsdom": "^22.1.0",
+    "tslib": "^2.6.2"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.3"
   }
 }

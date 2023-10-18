@@ -1,5 +1,25 @@
 # CHANGELOG
 
+## 0.76.1
+
+- Update to latest typescript-eslint (incl. new rulesets)
+
+
+## 0.75.1
+
+- Swap eslint to flat config
+
+
+## 0.74.1
+
+- Ensure correct structures for `tsconfig.*.json`
+
+
+## 0.73.1
+
+- Drop support for Node 14
+
+
 ## 0.72.1
 
 - Split `@polkadot/dev-ts` & `@polkadot/dev-test` packages

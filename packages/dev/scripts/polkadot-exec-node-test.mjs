@@ -1,48 +1,76 @@
+#!/usr/bin/env node
 // Copyright 2017-2023 @polkadot/dev authors & contributors
 // SPDX-License-Identifier: Apache-2.0
+
+// For Node 18, earliest usable is 18.14:
+//
+//   - node:test added in 18.0,
+//   - run method exposed in 18.9,
+//   - mock in 18.13,
+//   - diagnostics changed in 18.14
+//
+// Node 16 is not supported:
+//
+//   - node:test added is 16.17,
+//   - run method exposed in 16.19,
+//   - mock not available
 
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { run } from 'node:test';
-import TapParser from 'tap-parser';
+
+// NOTE error should be defined as "Error", however the @types/node definitions doesn't include all
+/** @typedef {{ diag: { file?: string; message?: string; }[]; fail: { details: { error: { failureType: unknown; cause: { code: number; message: string; stack: string; }; code: number; } }; file?: string; name: string }[]; pass: unknown[]; skip: unknown[]; todo: unknown[]; total: number }} Stats */
 
 console.time('\t elapsed :');
 
 const WITH_DEBUG = false;
 
 const args = process.argv.slice(2);
+/** @type {string[]} */
 const files = [];
+
+/** @type {Stats} */
 const stats = {
-  comm: [],
   diag: [],
-  extr: [],
   fail: [],
   pass: [],
   skip: [],
   todo: [],
   total: 0
 };
+/** @type {string | null} */
 let logFile = null;
-let bail = false;
-let format = 'dot';
+/** @type {number} */
 let startAt = 0;
+/** @type {boolean} */
+let bail = false;
+/** @type {boolean} */
+let toConsole = false;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--bail') {
     bail = true;
-  } else if (args[i] === '--format') {
-    i++;
-    format = args[i];
-  } else if (args[i] === '--log') {
-    i++;
-    logFile = args[i];
+  } else if (args[i] === '--console') {
+    toConsole = true;
+  } else if (args[i] === '--logfile') {
+    logFile = args[++i];
   } else {
     files.push(args[i]);
   }
 }
 
+/**
+ * @internal
+ *
+ * Prints a single character on-screen with formatting.
+ *
+ * @param {string} ch
+ */
 function output (ch) {
+  let result = '';
+
   if (stats.total % 100 === 0) {
     const now = performance.now();
 
@@ -54,18 +82,30 @@ function output (ch) {
     const m = (elapsed / 60) | 0;
     const s = (elapsed - (m * 60));
 
-    process.stdout.write(`\n ${`${m}:${s.toFixed(3).padStart(6, '0')}`.padStart(11)}  `);
+    result += `\n ${`${m}:${s.toFixed(3).padStart(6, '0')}`.padStart(11)}  `;
   } else if (stats.total % 10 === 0) {
-    process.stdout.write('  ');
+    result += '  ';
   } else if (stats.total % 5 === 0) {
-    process.stdout.write(' ');
+    result += ' ';
   }
 
   stats.total++;
 
-  process.stdout.write(ch);
+  result += ch;
+
+  process.stdout.write(result);
 }
 
+/**
+ * @internal
+ *
+ * Performs an indent of the line (and containing lines) with the specific count
+ *
+ * @param {number} count
+ * @param {string} str
+ * @param {string} start
+ * @returns {string}
+ */
 function indent (count, str = '', start = '') {
   let pre = '\n';
 
@@ -96,28 +136,31 @@ function indent (count, str = '', start = '') {
   }\n`;
 }
 
-function parseComplete () {
+function complete () {
   process.stdout.write('\n');
 
   let logError = '';
 
   stats.fail.forEach((r) => {
-    WITH_DEBUG && console.error(r);
+    WITH_DEBUG && console.error(JSON.stringify(r, null, 2));
 
     let item = '';
 
-    if (r.diag) {
-      item += indent(1, [...r.fullname.split('\n'), r.name].filter((s) => !!s).join('\n'), 'x ');
-      item += indent(2, `${r.diag.failureType} / ${r.diag.code}`);
-      item += indent(2, r.diag.error);
+    item += indent(1, [r.file, r.name].filter((s) => !!s).join('\n'), 'x ');
+    item += indent(2, `${r.details.error.failureType} / ${r.details.error.code}${r.details.error.cause.code && r.details.error.cause.code !== r.details.error.code ? ` / ${r.details.error.cause.code}` : ''}`);
 
-      // we don't add the stack to the log-to-file below
-      logError += item;
-
-      item += indent(2, r.diag.stack);
-
-      process.stdout.write(item);
+    if (r.details.error.cause.message) {
+      item += indent(2, r.details.error.cause.message);
     }
+
+    // we don't add the stack to the log-to-file below
+    logError += item;
+
+    if (r.details.error.cause.stack) {
+      item += indent(2, r.details.error.cause.stack);
+    }
+
+    process.stdout.write(item);
   });
 
   if (logFile && logError) {
@@ -127,13 +170,6 @@ function parseComplete () {
       console.error(e);
     }
   }
-
-  [stats.comm, stats.extr].forEach((s) => {
-    if (s.length) {
-      console.log();
-      s.forEach((r) => console.log(r.replaceAll('\n', ' ')));
-    }
-  });
 
   console.log();
   console.log('\t  passed ::', stats.pass.length);
@@ -147,9 +183,39 @@ function parseComplete () {
   // The full error information can be quite useful in the case of overall
   // failures, i.e. when Node itself has an internal error before even executing
   // a single test
-  if (stats.fail.length && stats.diag.length) {
-    stats.diag.forEach((e) => console.error(e));
+  if ((stats.fail.length || toConsole) && stats.diag.length) {
+    /** @type {string | undefined} */
+    let lastFilename = '';
+
+    stats.diag.forEach((r) => {
+      WITH_DEBUG && console.error(JSON.stringify(r, null, 2));
+
+      if (typeof r === 'string') {
+        // Node.js <= 18.14
+        console.log(r);
+      } else if (r.file && r.file.includes('@polkadot/dev/scripts')) {
+        // ignore, these are internal
+      } else {
+        if (lastFilename !== r.file) {
+          lastFilename = r.file;
+
+          if (lastFilename) {
+            console.log(`\n${lastFilename}::\n`);
+          } else {
+            console.log('\n');
+          }
+        }
+
+        console.log(`\t${r.message?.split('\n').join('\n\t')}`);
+      }
+    });
+    console.log();
+  }
+
+  if (stats.total === 0) {
+    console.error('FATAL: No tests executed');
     console.error();
+    process.exit(1);
   }
 
   process.exit(stats.fail.length);
@@ -158,49 +224,35 @@ function parseComplete () {
 // 1hr default timeout ... just in-case something goes wrong on an
 // CI-like environment, don't expect this to be hit (never say never)
 run({ files, timeout: 3_600_000 })
-  .on('test:diagnostic', (r) => {
-    stats.diag.push(
-      typeof r === 'string'
-        // Node v18
-        ? r
-        // Node v19
-        : r.file
-          ? `${r.file}:: ${r.message}`
-          : r.message
-    );
+  // this ensures that the stream is switched to flowing mode
+  // (which is needed to ensure the end event actually fires)
+  .on('data', () => undefined)
+  // the stream is done, print the summary and exit
+  .on('end', () => complete())
+  // handlers for all the known TestStream events from Node
+  .on('test:coverage', () => undefined)
+  .on('test:diagnostic', (data) => {
+    stats.diag.push(data);
   })
-  .pipe(
-    format === 'dot'
-      ? new TapParser({ bail }, parseComplete)
-      // Ignore the comments for now - it is mostly timing and overlaps with
-      // the actual diagnostic information
-      //
-      // .on('comment', (r) => {
-      //   stats.comm.push(r);
-      // })
-      // .on('extra', (r) => {
-      //   stats.extr.push(r);
-      // })
-      //
-      // just in-case, we want these logged
-      //
-      // .on('bailout', (r) => console.error('bailout', r))
-      // .on('plan', (r) => console.error('plan', r))
-        .on('fail', (r) => {
-          stats.fail.push(r);
-          output('x');
-        })
-        .on('pass', (r) => {
-          stats.pass.push(r);
-          output('·');
-        })
-        .on('skip', (r) => {
-          stats.skip.push(r);
-          output('>');
-        })
-        .on('todo', (r) => {
-          stats.todo.push(r);
-          output('!');
-        })
-      : process.stdout
-  );
+  .on('test:fail', (/** @type {any} */ data) => {
+    stats.fail.push(data);
+    output('x');
+
+    if (bail) {
+      complete();
+    }
+  })
+  .on('test:pass', (data) => {
+    if (typeof data.skip !== 'undefined') {
+      stats.skip.push(data);
+      output('>');
+    } else if (typeof data.todo !== 'undefined') {
+      stats.todo.push(data);
+      output('!');
+    } else {
+      stats.pass.push(data);
+      output('·');
+    }
+  })
+  .on('test:plan', () => undefined)
+  .on('test:start', () => undefined);

@@ -2,25 +2,24 @@
 // Copyright 2017-2023 @polkadot/dev authors & contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// @ts-check
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 import yargs from 'yargs';
 
-import { copyDirSync, copyFileSync, denoCreateDir, execSync, exitFatal, gitSetup, mkdirpSync, rimrafSync } from './util.mjs';
+import { copyDirSync, copyFileSync, denoCreateDir, execSync, exitFatal, GITHUB_REPO, GITHUB_TOKEN_URL, gitSetup, mkdirpSync, rimrafSync } from './util.mjs';
 
-/** @typedef {object} ChangelogMap */
+/** @typedef {Record<string, any>} ChangelogMap */
 
 console.log('$ polkadot-ci-ghact-build', process.argv.slice(2).join(' '));
 
 const DENO_REPO = 'polkadot-js/build-deno.land';
 const BUND_REPO = 'polkadot-js/build-bundle';
 
-const repo = `https://${process.env.GH_PAT}@github.com/${process.env.GITHUB_REPOSITORY}.git`;
-const denoRepo = `https://${process.env.GH_PAT}@github.com/${DENO_REPO}.git`;
-const bundRepo = `https://${process.env.GH_PAT}@github.com/${BUND_REPO}.git`;
+const repo = `${GITHUB_TOKEN_URL}/${GITHUB_REPO}.git`;
+const denoRepo = `${GITHUB_TOKEN_URL}/${DENO_REPO}.git`;
+const bundRepo = `${GITHUB_TOKEN_URL}/${BUND_REPO}.git`;
 const bundClone = 'build-bundle-clone';
 const denoClone = 'build-deno-clone';
 
@@ -33,7 +32,7 @@ const shouldDeno = [];
 /** @type {string[]} */
 const shouldBund = [];
 
-const argv = yargs(process.argv.slice(2))
+const argv = await yargs(process.argv.slice(2))
   .options({
     'skip-beta': {
       description: 'Do not increment as beta',
@@ -167,7 +166,7 @@ function npmSetVersionFields () {
 function npmSetup () {
   const registry = 'registry.npmjs.org';
 
-  fs.writeFileSync(path.join(os.homedir(), '.npmrc'), `//${registry}/:_authToken=${process.env.NPM_TOKEN}`);
+  fs.writeFileSync(path.join(os.homedir(), '.npmrc'), `//${registry}/:_authToken=${process.env['NPM_TOKEN']}`);
 }
 
 /**
@@ -194,7 +193,7 @@ function npmPublish () {
       execSync(`npm publish --quiet --access public ${tag}`);
 
       break;
-    } catch (error) {
+    } catch {
       if (count < 5) {
         const end = Date.now() + 15000;
 
@@ -216,10 +215,10 @@ function npmPublish () {
  *
  * @param {string[][]} parts
  * @param {ChangelogMap} result
- * @returns
+ * @returns {ChangelogMap}
  */
 function createChangelogMap (parts, result = {}) {
-  for (let i = 0; i < parts.length; i++) {
+  for (let i = 0, count = parts.length; i < count; i++) {
     const [n, ...e] = parts[i];
 
     if (!result[n]) {
@@ -250,7 +249,7 @@ function createChangelogArr (map) {
   const result = [];
   const entries = Object.entries(map);
 
-  for (let i = 0; i < entries.length; i++) {
+  for (let i = 0, count = entries.length; i < count; i++) {
     const [name, imap] = entries[i];
 
     if (name) {
@@ -436,7 +435,7 @@ function verBump () {
   const { version: currentVersion, versions } = npmGetJson();
   const [version, tag] = currentVersion.split('-');
   const [,, patch] = version.split('.');
-  const lastVersion = (versions && versions.npm) || currentVersion;
+  const lastVersion = versions?.npm || currentVersion;
 
   if (argv['skip-beta'] || patch === '0') {
     // don't allow beta versions
@@ -472,7 +471,7 @@ function gitPush () {
   const version = npmGetVersion();
   let doGHRelease = false;
 
-  if (process.env.GH_RELEASE_GITHUB_API_TOKEN) {
+  if (process.env['GH_RELEASE_GITHUB_API_TOKEN']) {
     const changes = fs.readFileSync('CHANGELOG.md', 'utf8');
 
     if (changes.includes(`## ${version}`)) {
@@ -494,11 +493,11 @@ function gitPush () {
 
 skip-checks: true"`);
 
-  execSync(`git push ${repo} HEAD:${process.env.GITHUB_REF}`, true);
+  execSync(`git push ${repo} HEAD:${process.env['GITHUB_REF']}`, true);
 
   if (doGHRelease) {
-    const files = process.env.GH_RELEASE_FILES
-      ? `--assets ${process.env.GH_RELEASE_FILES}`
+    const files = process.env['GH_RELEASE_FILES']
+      ? `--assets ${process.env['GH_RELEASE_FILES']}`
       : '';
 
     execSync(`yarn polkadot-exec-ghrelease --draft ${files} --yes`);

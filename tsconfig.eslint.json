@@ -4,7 +4,12 @@
     "baseUrl": "./packages"
   },
   "include": [
-    "packages/**/*"
+    "packages/**/src/**/*",
+    "packages/**/config/**/*",
+    "packages/**/scripts/**/*",
+    "scripts/*",
+    ".prettierrc.cjs",
+    "eslint.config.js"
   ],
   "exclude": [
     "**/node_modules/**/*"

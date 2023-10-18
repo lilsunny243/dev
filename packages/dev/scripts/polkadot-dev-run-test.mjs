@@ -4,95 +4,106 @@
 
 import process from 'node:process';
 
-import { execNodeTsSync, exitFatal, importPath, readdirSync } from './util.mjs';
+import { execNodeTsSync, exitFatal, exitFatalEngine, importPath, readdirSync } from './util.mjs';
 
 // A & B are just helpers here and in the errors below
 const EXT_A = ['spec', 'test'];
 const EXT_B = ['ts', 'tsx', 'js', 'jsx', 'cjs', 'mjs'];
 
 // The actual extensions we are looking for
-const EXTS = EXT_A.reduce((exts, s) => exts.concat(...EXT_B.map((e) => `.${s}.${e}`)), []);
+const EXTS = EXT_A.reduce((/** @type {string[]} */ exts, s) => exts.concat(...EXT_B.map((e) => `.${s}.${e}`)), []);
 
 const args = process.argv.slice(2);
 
 console.log('$ polkadot-dev-run-test', args.join(' '));
 
+exitFatalEngine();
+
 const cmd = [];
 const nodeFlags = [];
 const filters = [];
+
+/** @type {Record<string, string[]>} */
 const filtersExcl = {};
+/** @type {Record<string, string[]>} */
 const filtersIncl = {};
+
 let testEnv = 'node';
+let isDev = false;
 
 for (let i = 0; i < args.length; i++) {
-  if (args[i].startsWith('-')) {
-    switch (args[i]) {
-      // environment, not passed-htrough
-      case '--env':
-        if (!['browser', 'node'].includes(args[++i])) {
-          throw new Error(`Invalid --env ${args[i]}, expected 'browser' or 'node'`);
-        }
+  switch (args[i]) {
+    // when running inside a dev environment, specifically @polkadot/dev
+    case '--dev-build':
+      isDev = true;
+      break;
 
-        testEnv = args[i];
-        break;
+    // environment, not passed-through
+    case '--env':
+      if (!['browser', 'node'].includes(args[++i])) {
+        throw new Error(`Invalid --env ${args[i]}, expected 'browser' or 'node'`);
+      }
 
-      // -- means that all following args are passed-through as-is
-      case '--':
-        while (++i < args.length) {
-          cmd.push(args[i]);
-        }
+      testEnv = args[i];
+      break;
 
-        break;
+    // internal flags with no params
+    case '--bail':
+    case '--console':
+      cmd.push(args[i]);
+      break;
 
-      // any other arguments are passed-through (check of skipping here)
-      default:
-        if (['--experimental-specifier-resolution', '--es-module-specifier-resolution', '--import', '--loader', '--require'].some((f) => args[i].startsWith(f))) {
-          // additional node flags (with args)
-          nodeFlags.push(args[i]);
+    // internal flags, with params
+    case '--logfile':
+      cmd.push(args[i]);
+      cmd.push(args[++i]);
+      break;
 
-          if (!args[i].includes('=')) {
-            nodeFlags.push(args[++i]);
-          }
-        } else if (['--experimental-vm-modules', '--no-warnings'].some((f) => args[i].startsWith(f))) {
-          // node flags without additional params
-          nodeFlags.push(args[i]);
+    // node flags that could have additional params
+    case '--import':
+    case '--loader':
+    case '--require':
+      nodeFlags.push(args[i]);
+      nodeFlags.push(args[++i]);
+      break;
+
+    // any other non-flag arguments are passed-through
+    default:
+      if (args[i].startsWith('-')) {
+        throw new Error(`Unknown flag ${args[i]} found`);
+      }
+
+      filters.push(args[i]);
+
+      if (args[i].startsWith('^')) {
+        const key = args[i].slice(1);
+
+        if (filtersIncl[key]) {
+          delete filtersIncl[key];
         } else {
-          cmd.push(args[i]);
-
-          // for --<param> we only push when no = is included (self-contained)
-          if (!args[i].startsWith('--') || !args[i].includes('=')) {
-            cmd.push(args[++i]);
-          }
+          filtersExcl[key] = key.split(/[\\/]/);
         }
-
-        break;
-    }
-  } else {
-    // no "-"" found, so we use these as path filters
-    filters.push(args[i]);
-
-    if (args[i].startsWith('^')) {
-      const key = args[i].slice(1);
-
-      if (filtersIncl[key]) {
-        delete filtersIncl[key];
       } else {
-        filtersExcl[key] = key.split(/[\\/]/);
-      }
-    } else {
-      const key = args[i];
+        const key = args[i];
 
-      if (filtersExcl[key]) {
-        delete filtersExcl[key];
-      } else {
-        filtersIncl[key] = key.split(/[\\/]/);
+        if (filtersExcl[key]) {
+          delete filtersExcl[key];
+        } else {
+          filtersIncl[key] = key.split(/[\\/]/);
+        }
       }
-    }
+
+      break;
   }
 }
 
-const applyFilters = (parts, filters) =>
-  Object
+/**
+ * @param {string[]} parts
+ * @param {Record<string, string[]>} filters
+ * @returns {boolean}
+ */
+function applyFilters (parts, filters) {
+  return Object
     .values(filters)
     .some((filter) =>
       parts
@@ -116,6 +127,7 @@ const applyFilters = (parts, filters) =>
           )
         )
     );
+}
 
 const files = readdirSync('packages', EXTS).filter((file) => {
   const parts = file.split(/[\\/]/);
@@ -136,10 +148,17 @@ if (files.length === 0) {
   exitFatal(`No files matching *.{${EXT_A.join(', ')}}.{${EXT_B.join(', ')}} found${filters.length ? ` (filtering on ${filters.join(', ')})` : ''}`);
 }
 
-const cliArgs = [...cmd, ...files].join(' ');
-
 try {
-  execNodeTsSync(`--require @polkadot/dev-test/${testEnv} ${nodeFlags.join(' ')} ${importPath('@polkadot/dev/scripts/polkadot-exec-node-test.mjs')} ${cliArgs}`);
+  const allFlags = `${importPath('@polkadot/dev/scripts/polkadot-exec-node-test.mjs')} ${[...cmd, ...files].join(' ')}`;
+
+  nodeFlags.push('--require');
+  nodeFlags.push(
+    isDev
+      ? `./packages/dev-test/build/cjs/${testEnv}.js`
+      : `@polkadot/dev-test/${testEnv}`
+  );
+
+  execNodeTsSync(allFlags, nodeFlags, false, isDev ? './packages/dev-ts/build/cached.js' : undefined);
 } catch {
   process.exit(1);
 }

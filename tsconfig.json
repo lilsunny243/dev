@@ -2,12 +2,17 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "baseUrl": "./packages",
-    "composite": false
+    "composite": false,
+    "emitDeclarationOnly": false,
+    "noEmit": true
   },
   "include": [
-    "packages/**/src/**/*"
+    "packages/**/src/**/*",
+    "packages/**/config/**/*",
+    "packages/**/scripts/**/*"
   ],
   "exclude": [
+    "**/build/**/*",
     "**/node_modules/**/*"
   ]
 }
